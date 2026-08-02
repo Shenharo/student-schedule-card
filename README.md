@@ -23,6 +23,27 @@ Supports subject management, color coding, room display, current time highlighti
 - 🛠️ Still editable in YAML if preferred
 
 ---
+
+## 🔥 Also available inside Hearth
+
+If you use [Hearth](https://github.com/DomCim/Homeassistant-hearth), the same timetable is now one
+of its cards (`custom:hearth-timetable-card`), configured in the integration instead of in the card:
+
+- **Lesson times** are entered once for the whole household, one `HH:MM-HH:MM` per line.
+- **Breaks are not configured at all** — every gap of five minutes or more between two periods is
+  drawn as one.
+- **A week is one field per weekday**, one lesson per line: `Kunst | 1.OG 5` for a room, `-` for a
+  free period, `6. Sport` for a day that starts late.
+- **Subject colours come from the subject names**, so the same subject is the same colour on every
+  child's card. The colour picker is only there to correct them.
+- **Days, names and avatars come from the family members** already configured in Hearth, so the
+  card itself usually needs no options at all.
+
+This card stays as it is: it is standalone, needs no integration, and remains the right choice if
+you do not run Hearth. Migrating is mostly mechanical — `times:` becomes the lesson-times field,
+and each day of `subjects:` becomes that weekday's field.
+
+---
 ## 📦 HACS Installation
 
 This card is available as a **custom repository** in [HACS](https://hacs.xyz):
