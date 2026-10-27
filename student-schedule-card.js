@@ -690,16 +690,20 @@
       @value-changed=${this._formChanged}
     ></ha-form>
 
-    <label class="editor-label">Weekdays (one per line):</label>
-    <ha-code-editor
-      mode="yaml"
-      .value=${(this._data.days || []).map(normalizeDay).map((d) => d.label).join("\n")}
-      @value-changed=${(e) => this._updateDayLabels(e.detail.value)}
-    ></ha-code-editor>
-
+    <label class="editor-label">Days:</label>
     ${(this._data.days || []).map(normalizeDay).map((day) => html`
       <div class="day-row">
-        <span class="day-label">${day.label}</span>
+        <ha-selector
+          .hass=${this.hass}
+          .selector=${{ text: {} }}
+          .label=${"Display name"}
+          .required=${false}
+          .value=${day.label}
+          @value-changed=${(e) => {
+                    e.stopPropagation();
+                    this._updateDay(day.index, "label", e.detail.value ?? "");
+                }}
+        ></ha-selector>
         <ha-selector
           .hass=${this.hass}
           .selector=${WEEKDAY_SELECTOR}
@@ -715,8 +719,13 @@
             @change=${(e) => this._updateDay(day.index, "enabled", e.target.checked)}
           ></ha-switch>
         </ha-formfield>
+        <ha-icon-button
+          .label=${"Remove day"}
+          @click=${() => this._removeDay(day.index)}
+        ><ha-icon icon="mdi:delete"></ha-icon></ha-icon-button>
       </div>
     `)}
+    <ha-button @click=${this._addDay}>Add day</ha-button>
   `;
         }
         _renderTimesTab() {
@@ -758,22 +767,34 @@
             this._emit();
         }
 
-        // Applies the "one per line" weekday list, keeping the settings of existing days.
-        _updateDayLabels(text) {
-            const old = this._data.days || [];
-            const labels = text.split("\n").map((v) => v.trim()).filter(Boolean);
-            const days = labels.map((label, i) =>
-                old[i] && typeof old[i] === "object" ? { ...old[i], label } : label
-            );
+        _addDay() {
+            const days = this._data.days || [];
+            this._updateField("days", [...days, `Day ${days.length + 1}`]);
+        }
+
+        // Subjects are keyed by day position, so the days after the removed one move up a key.
+        _removeDay(index) {
+            const days = this._data.days.filter((_, i) => i !== index);
+            const subjects = {};
+            for (const [key, lessons] of Object.entries(this._data.subjects || {})) {
+                const pos = Number(key) - 1;
+                if (pos < index) subjects[key] = lessons;
+                else if (pos > index) subjects[String(pos)] = lessons;
+            }
+            this._data = { ...this._data, subjects };
+            this._subjects = this._extractSubjects(subjects);
             this._updateField("days", days);
         }
 
         _updateDay(index, field, value) {
             const day = normalizeDay(this._data.days[index], index);
             if (day[field] === value) return;
+            const { label, day: weekday, enabled } = { ...day, [field]: value };
             const days = [...this._data.days];
-            const { index: _index, ...entry } = { ...day, [field]: value };
-            days[index] = entry;
+            // Keep plain strings for days that only have a label.
+            days[index] = weekday || !enabled
+                ? { label, ...(weekday && { day: weekday }), ...(!enabled && { enabled: false }) }
+                : label;
             this._updateField("days", days);
         }
         _replacePlaceholder(oldValue, newValue) {
@@ -1086,17 +1107,13 @@ ha-form {
 }
 .day-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  gap: 8px 12px;
   margin-top: 8px;
 }
 .day-row ha-selector {
-  flex: 1;
-}
-.day-label {
-  flex: 0 0 100px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: 1 1 140px;
 }
 
       `;
