@@ -2,18 +2,48 @@
 (function (LitElement) {
     const html = LitElement.prototype.html;
     const css = LitElement.prototype.css;
+
+    // Attributes of `schedule_entity` that override the card config.
+    const ENTITY_KEYS = ["days", "times", "breaks", "subjects", "colors", "break_label", "description"];
+    // Index matches Date.getDay().
+    const WEEKDAYS = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
+    // Day labels that are recognised without an explicit `day:` (lower case).
+    const DAY_NAMES = {
+        sunday: 0, sun: 0, sonntag: 0, so: 0, "ראשון": 0,
+        monday: 1, mon: 1, montag: 1, mo: 1, "שני": 1,
+        tuesday: 2, tue: 2, dienstag: 2, di: 2, "שלישי": 2,
+        wednesday: 3, wed: 3, mittwoch: 3, mi: 3, "רביעי": 3,
+        thursday: 4, thu: 4, donnerstag: 4, do: 4, "חמישי": 4,
+        friday: 5, fri: 5, freitag: 5, fr: 5, "שישי": 5,
+        saturday: 6, sat: 6, samstag: 6, sa: 6, "שבת": 6,
+    };
+
+    // A `days` entry is either a label string or { label, day, enabled }.
+    function normalizeDay(entry, index) {
+        if (entry && typeof entry === "object") {
+            return { label: entry.label || "", day: entry.day || null, enabled: entry.enabled !== false, index };
+        }
+        return { label: String(entry ?? ""), day: null, enabled: true, index };
+    }
+
+    function weekdayOf(day) {
+        if (day.day && WEEKDAYS.includes(day.day)) return WEEKDAYS.indexOf(day.day);
+        return DAY_NAMES[day.label.toLowerCase()] ?? -1;
+    }
+
     // MARK: Card Component
     class StudentScheduleCard extends LitElement {
         static get properties() {
             return {
                 hass: {},
                 config: {},
+                _mobileDayIndex: { state: true },
             };
         }
 
         setConfig(config) {
-            if (!config.times || !config.subjects || !config.days) {
-                throw new Error("You must define 'days', 'times', and 'subjects'.");
+            if (!config.schedule_entity && (!config.times || !config.subjects || !config.days)) {
+                throw new Error("You must define 'days', 'times', and 'subjects', or 'schedule_entity'.");
             }
             this.config = {
                 show_highlight: true,
@@ -23,26 +53,43 @@
             };
         }
 
+        // Card config with the attributes of `schedule_entity` (if set) applied on top.
+        _effectiveConfig() {
+            const entity = this.config.schedule_entity && this.hass?.states[this.config.schedule_entity];
+            if (!entity) return this.config;
+            const merged = { ...this.config };
+            for (const key of ENTITY_KEYS) {
+                if (entity.attributes[key] != null) merged[key] = entity.attributes[key];
+            }
+            return merged;
+        }
+
         getCardSize() {
-            return (this.config.times?.length || 0) + 1;
+            return (this._effectiveConfig().times?.length || 0) + 1;
         }
 
         render() {
-            const times = this.config.times;
-            const subjects = this.config.subjects;
-            const breaks = this.config.show_breaks ? this.config.breaks || [] : [];
-            const breakLabel = this.config.break_label || "Pause";
+            const config = this._effectiveConfig();
+            if (!config.times || !config.subjects || !config.days) {
+                return html`<ha-card><div class="warning">
+                    ${config.schedule_entity}: entity not found or missing 'days', 'times' or 'subjects' attributes
+                </div></ha-card>`;
+            }
+            const times = config.times;
+            const subjects = config.subjects;
+            const breaks = config.show_breaks ? config.breaks || [] : [];
+            const breakLabel = config.break_label || "Pause";
             const containerWidth = this.offsetWidth;
-            const useShortDays = containerWidth < 700; // Schwelle anpassen
-            const useShortSubjects = containerWidth < 700; // Schwelle anpassen
-            const defaultPlaceholder = this.config.default_placeholder;
-            const showHighlight = this.config.show_highlight !== false;
-            const showRooms = this.config.show_rooms !== false;
-            const shortenRooms = useShortSubjects && this.config.shorten_room_names !== false;
-            const days = useShortDays
-                ? this._shortenDays(this.config.days)
-                : this.config.days;
-            const useShortTime = days.length > 5 && containerWidth < 700; // Schwelle anpassen
+            const useShortDays = containerWidth < 700; // adjust threshold
+            const useShortSubjects = containerWidth < 700; // adjust threshold
+            const defaultPlaceholder = config.default_placeholder;
+            const showHighlight = config.show_highlight !== false;
+            const showRooms = config.show_rooms !== false;
+            const shortenRooms = useShortSubjects && config.shorten_room_names !== false;
+            const visibleDays = config.days.map(normalizeDay).filter((d) => d.enabled);
+            const labels = visibleDays.map((d) => d.label);
+            const days = useShortDays ? this._shortenDays(labels) : labels;
+            const useShortTime = days.length > 5 && containerWidth < 700; // adjust threshold
             const displayBreak = useShortDays
                 ? this._shortenSubject(breakLabel)
                 : breakLabel;
@@ -57,20 +104,23 @@
 
             const now = new Date();
             const currentMinutes = now.getHours() * 60 + now.getMinutes();
-            const currentDayIndex = now.getDay(); // 0=So ... 6=Sa
-            const dayOffset = 1; // 1 = Woche startet mit Montag
-            const currentDayLabel = days[(currentDayIndex + 7 - dayOffset) % 7];
+            const todayIndex = this._todayIndex(visibleDays, config.first_day_of_week);
+
+            if (config.mobile_view === true && containerWidth > 0 && containerWidth < 480) {
+                return this._renderMobileView(config, visibleDays, allTimes, currentMinutes, todayIndex);
+            }
 
             return html`
         <ha-card
-          header=${this._renderHeader()}
+          header=${this._renderHeader(config)}
           style="padding-bottom: 24px; width: 100%;"
+          dir=${config.rtl === true ? "rtl" : "ltr"}
         >
           <table class="stundenplan">
             <tr>
               <th></th>
-             ${days.map((day) => {
-                const highlightClass = showHighlight && day === currentDayLabel ? "highlight" : "";
+             ${days.map((day, dayIdx) => {
+                const highlightClass = showHighlight && dayIdx === todayIndex ? "highlight" : "";
                 return html`<th id="tag-${day}" class="${highlightClass}">${day}</th>`;
             })}
             </tr>
@@ -79,7 +129,7 @@
                 const startMin = this._toMinutes(start);
                 const endMin = this._toMinutes(end);
                 const isNow =
-                    currentMinutes >= startMin && currentMinutes < endMin;
+                    todayIndex !== -1 && currentMinutes >= startMin && currentMinutes < endMin;
                 const rowClass =
                     row.type === "break"
                         ? "pause"
@@ -99,7 +149,7 @@
                   </td>
                   ${days.map((_, dayIdx) => {
                             const tagClass =
-                                showHighlight && dayIdx === currentDayIndex - 1
+                                showHighlight && dayIdx === todayIndex
                                     ? "highlight-col-cell"
                                     : "";
                             if (row.type === "break")
@@ -107,27 +157,16 @@
                         ${displayBreak}
                       </td>`;
 
-                            const index = times.findIndex((t) => t.trim() === row.time);
-                            const dayKey = (dayIdx + 1).toString();
-                            const raw = subjects?.[dayKey]?.[index];
-                            let subject = defaultPlaceholder;
-                            let room = null;
-                            let isFree = false;
-
-                            if (typeof raw === "object" && raw !== null) {
-                                isFree = raw.free === true;
-                                subject = isFree ? defaultPlaceholder : raw.subject || defaultPlaceholder;
-                                room = isFree ? null : raw.room || null;
-                            } else if (typeof raw === "string") {
-                                subject = raw;
-                            }
-                            const baseColor = this.config.colors?.[isFree ? "FREE" : subject] || "#ccc";
+                            const { subject, room, isFree } = this._lesson(
+                                subjects, visibleDays[dayIdx], times, row.time, defaultPlaceholder
+                            );
+                            const baseColor = config.colors?.[isFree ? "FREE" : subject] || "#ccc";
 
                             const displayName = useShortSubjects
                                 ? this._shortenSubject(subject)
                                 : subject;
                             const tooltip = room
-                                ? `${subject} – Raum ${room}`
+                                ? `${subject} – Room ${room}`
                                 : subject;
 
                             return html`
@@ -153,16 +192,103 @@
         </ha-card>
       `;
         }
+
+        _renderMobileView(config, visibleDays, allTimes, currentMinutes, todayIndex) {
+            const showHighlight = config.show_highlight !== false;
+            const showRooms = config.show_rooms !== false;
+            const rtl = config.rtl === true;
+            let dayIdx = this._mobileDayIndex ?? todayIndex;
+            if (dayIdx < 0 || dayIdx >= visibleDays.length) dayIdx = 0;
+            const isToday = dayIdx === todayIndex;
+            const step = (delta) => {
+                this._mobileDayIndex = (dayIdx + delta + visibleDays.length) % visibleDays.length;
+            };
+
+            return html`
+        <ha-card
+          header=${this._renderHeader(config)}
+          style="padding-bottom: 24px; width: 100%;"
+          dir=${rtl ? "rtl" : "ltr"}
+        >
+          <div class="mobile-nav">
+            <ha-icon-button @click=${() => step(-1)} label="Previous day">
+              <ha-icon icon=${rtl ? "mdi:chevron-right" : "mdi:chevron-left"}></ha-icon>
+            </ha-icon-button>
+            <span class="mobile-day-title ${showHighlight && isToday ? "highlight" : ""}">
+              ${visibleDays[dayIdx]?.label}
+            </span>
+            <ha-icon-button @click=${() => step(1)} label="Next day">
+              <ha-icon icon=${rtl ? "mdi:chevron-left" : "mdi:chevron-right"}></ha-icon>
+            </ha-icon-button>
+          </div>
+          <div class="mobile-schedule">
+            ${allTimes.map((row) => {
+                if (row.type === "break") {
+                    return html`<div class="mobile-row pause">
+                        <div class="mobile-time">${row.time}</div>
+                        <div>${config.break_label || "Pause"}</div>
+                    </div>`;
+                }
+                const [start, end] = row.time.split("-").map((t) => this._toMinutes(t.trim()));
+                const isNow = isToday && currentMinutes >= start && currentMinutes < end;
+                const { subject, room, isFree } = this._lesson(
+                    config.subjects, visibleDays[dayIdx], config.times, row.time, config.default_placeholder
+                );
+                const baseColor = config.colors?.[isFree ? "FREE" : subject] || "#ccc";
+                return html`
+                <div
+                  class="mobile-row ${showHighlight && isNow ? "active-row" : ""}"
+                  style="background-color:${this._withAlpha(baseColor)}"
+                >
+                  <div class="mobile-time">${row.time}</div>
+                  <div class="mobile-content">
+                    <div>${subject}</div>
+                    ${room && showRooms ? html`<div class="room">${room}</div>` : ""}
+                  </div>
+                </div>`;
+            })}
+          </div>
+        </ha-card>
+      `;
+        }
+
+        // Resolves the lesson of a day at a time slot. Subjects are keyed by the day's
+        // position in `days` (1-based), so hiding a day does not shift the others.
+        _lesson(subjects, day, times, time, placeholder) {
+            const index = times.findIndex((t) => t.trim() === time);
+            const raw = subjects?.[(day.index + 1).toString()]?.[index];
+            if (typeof raw === "object" && raw !== null) {
+                const isFree = raw.free === true;
+                return {
+                    subject: isFree ? placeholder : raw.subject || placeholder,
+                    room: isFree ? null : raw.room || null,
+                    isFree,
+                };
+            }
+            return { subject: typeof raw === "string" ? raw : placeholder, room: null, isFree: false };
+        }
+
+        // Position of today in `days`, or -1. Days without a recognisable weekday
+        // fall back to their position, counted from `first_day_of_week`.
+        _todayIndex(days, firstDayOfWeek) {
+            const today = new Date().getDay();
+            const offset = firstDayOfWeek === "sunday" ? 0 : 1;
+            return days.findIndex((d) => {
+                const weekday = weekdayOf(d);
+                return (weekday !== -1 ? weekday : (offset + d.index) % 7) === today;
+            });
+        }
+
         _shortenDays(days) {
             return days.map((d) =>
                 d.length > 3
-                    ? d.slice(0, 2) // z. B. „Montag“ → „Mo“
+                    ? d.slice(0, 2) // e.g. "Monday" -> "Mo"
                     : d
             );
         }
         _shortenSubject(name) {
             if (!name || name.length <= 2) return name;
-            return name.slice(0, 2); // z. B. "Mathematik" → "Ma"
+            return name.slice(0, 2); // e.g. "Mathematics" -> "Ma"
         }
         connectedCallback() {
             super.connectedCallback();
@@ -179,8 +305,8 @@
             const [h, m] = t.split(":").map(Number);
             return h * 60 + m;
         }
-        _renderHeader() {
-            const { person_entity, name, icon, description } = this.config;
+        _renderHeader(config) {
+            const { person_entity, name, icon, description } = config;
 
             if (person_entity && this.hass?.states[person_entity]) {
                 const entity = this.hass.states[person_entity];
@@ -289,6 +415,48 @@
           border-bottom: 3px solid var(--primary-color);
           font-weight: bold;
         }
+        .warning {
+          padding: 16px;
+          color: var(--error-color);
+        }
+        .mobile-nav {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 0 8px;
+          border-bottom: 1px solid var(--divider-color, #ccc);
+        }
+        .mobile-day-title {
+          font-size: 1.2em;
+          font-weight: bold;
+          padding: 4px 16px;
+          border-radius: 4px;
+        }
+        .mobile-schedule {
+          padding: 8px;
+        }
+        .mobile-row {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          padding: 12px;
+          margin: 4px 0;
+          border-radius: 8px;
+          border: 1px solid var(--divider-color, #ccc);
+        }
+        .mobile-row.active-row {
+          border: 2px solid var(--primary-color);
+          font-weight: bold;
+        }
+        .mobile-time {
+          font-weight: bold;
+          min-width: 100px;
+          font-size: 0.9em;
+          color: var(--secondary-text-color);
+        }
+        .mobile-content {
+          flex: 1;
+        }
       `;
         }
 
@@ -386,7 +554,7 @@
                     } else if (typeof fach === "object" && fach !== null) {
                         const entry = { ...fach };
 
-                        // subject darf null bleiben – kein Platzhalter setzen
+                        // subject may stay null - do not fill in the placeholder
                         if ("subject" in entry && entry.subject?.trim?.() === "") {
                             entry.subject = null;
                         }
@@ -395,7 +563,7 @@
                             entry.room = null;
                         }
 
-                        // Nur automatisch auf free:true setzen, wenn es nicht schon definiert ist
+                        // Only derive free automatically if it is not set explicitly
                         if (!("free" in entry)) {
                             entry.free = !entry.subject && !entry.room;
                         }
@@ -438,6 +606,12 @@
           ${tabs.map((t) => html`<mwc-tab label="${t}"></mwc-tab>`)}
         </mwc-tab-bar>
         <div class="card-content">
+          ${this._data.schedule_entity
+                    ? html`<ha-alert alert-type="info">
+              Days, times, breaks, subjects and colors provided by ${this._data.schedule_entity}
+              override the values set here.
+            </ha-alert>`
+                    : ""}
           ${this._tabIndex === 0 ? this._renderGeneralTab() : ""}
           ${this._tabIndex === 1 ? this._renderTimesTab() : ""}
           ${this._tabIndex === 2 ? this._renderColorsTab() : ""}
@@ -455,6 +629,16 @@
       .includeDomains=${["person"]}
       configValue="person_entity"
       @value-changed=${(e) => this._valueChanged(e)}
+    ></ha-entity-picker>
+
+    <ha-entity-picker
+      .hass=${this.hass}
+      .label=${"Schedule entity (optional, its attributes override days, times, breaks, subjects and colors)"}
+      .value=${this._data.schedule_entity || ""}
+      @value-changed=${(e) => {
+                    e.stopPropagation();
+                    this._updateField("schedule_entity", e.detail.value || undefined);
+                }}
     ></ha-entity-picker>
 
     ${!this._data.person_entity
@@ -504,9 +688,44 @@
     <label class="editor-label">Weekdays (one per line):</label>
     <ha-code-editor
       mode="yaml"
-      .value=${(this._data.days || []).join("\n")}
-      @value-changed=${(e) => this._updateCode("days", e.detail.value)}
+      .value=${(this._data.days || []).map(normalizeDay).map((d) => d.label).join("\n")}
+      @value-changed=${(e) => this._updateDayLabels(e.detail.value)}
     ></ha-code-editor>
+
+    ${(this._data.days || []).map(normalizeDay).map((day) => html`
+      <div class="day-row">
+        <span class="day-label">${day.label}</span>
+        <ha-select
+          label="Weekday"
+          .value=${day.day || ""}
+          @selected=${(e) => this._updateDay(day.index, "day", e.target.value || null)}
+          @closed=${(e) => e.stopPropagation()}
+        >
+          <mwc-list-item value="">Auto-detect</mwc-list-item>
+          ${WEEKDAYS.map((w) => html`<mwc-list-item value=${w}>${w[0].toUpperCase() + w.slice(1)}</mwc-list-item>`)}
+        </ha-select>
+        <ha-formfield label="Show">
+          <ha-switch
+            .checked=${day.enabled}
+            @change=${(e) => this._updateDay(day.index, "enabled", e.target.checked)}
+          ></ha-switch>
+        </ha-formfield>
+      </div>
+    `)}
+
+    <label class="editor-label">First day of week (for days without a recognised weekday):</label>
+    <ha-select
+      .value=${this._data.first_day_of_week || "monday"}
+      @selected=${(e) => {
+                    // ha-select also fires on first render
+                    if (e.target.value !== (this._data.first_day_of_week || "monday"))
+                        this._updateField("first_day_of_week", e.target.value);
+                }}
+      @closed=${(e) => e.stopPropagation()}
+    >
+      <mwc-list-item value="monday">Monday</mwc-list-item>
+      <mwc-list-item value="sunday">Sunday</mwc-list-item>
+    </ha-select>
 
     <label class="editor-label">Display Options:</label>
     <div class="switch-row">
@@ -528,6 +747,20 @@
         <ha-switch
           .checked=${this._data.shorten_room_names !== false}
           @change=${(e) => this._updateField("shorten_room_names", e.target.checked)}
+        ></ha-switch>
+      </ha-formfield>
+
+      <ha-formfield label="Single-day view on narrow screens">
+        <ha-switch
+          .checked=${this._data.mobile_view === true}
+          @change=${(e) => this._updateField("mobile_view", e.target.checked)}
+        ></ha-switch>
+      </ha-formfield>
+
+      <ha-formfield label="Right-to-left">
+        <ha-switch
+          .checked=${this._data.rtl === true}
+          @change=${(e) => this._updateField("rtl", e.target.checked)}
         ></ha-switch>
       </ha-formfield>
     </div>
@@ -554,7 +787,7 @@
         _updateField(key, value) {
             if (!this._data) return;
 
-            // Sonderfall: Wenn sich der Placeholder ändert
+            // Special case: the placeholder changed
             if (key === "default_placeholder") {
                 const oldPlaceholder = this._previousPlaceholder;
                 const newPlaceholder = value;
@@ -562,14 +795,36 @@
                 this._data.default_placeholder = newPlaceholder;
                 this._replacePlaceholder(oldPlaceholder, newPlaceholder);
                 this._previousPlaceholder = newPlaceholder;
+            } else if (value === undefined) {
+                const { [key]: _removed, ...rest } = this._data;
+                this._data = rest;
             } else {
                 this._data = { ...this._data, [key]: value };
             }
 
             this._emit();
         }
+
+        // Applies the "one per line" weekday list, keeping the settings of existing days.
+        _updateDayLabels(text) {
+            const old = this._data.days || [];
+            const labels = text.split("\n").map((v) => v.trim()).filter(Boolean);
+            const days = labels.map((label, i) =>
+                old[i] && typeof old[i] === "object" ? { ...old[i], label } : label
+            );
+            this._updateField("days", days);
+        }
+
+        _updateDay(index, field, value) {
+            const day = normalizeDay(this._data.days[index], index);
+            if (day[field] === value) return; // ha-select also fires on first render
+            const days = [...this._data.days];
+            const { index: _index, ...entry } = { ...day, [field]: value };
+            days[index] = entry;
+            this._updateField("days", days);
+        }
         _replacePlaceholder(oldValue, newValue) {
-            const days = this._data.days || ["Mo", "Di", "Mi", "Do", "Fr"];
+            const days = this._data.days || ["Mon", "Tue", "Wed", "Thu", "Fri"];
             const times = this._data.times || [];
             const placeholder = newValue || "--";
 
@@ -626,12 +881,12 @@
 
 
         _renderSubjectsTab() {
-            const days = this._data.days || ["Mo", "Di", "Mi", "Do", "Fr"];
+            const days = this._data.days || ["Mon", "Tue", "Wed", "Thu", "Fri"];
             const times = this._data.times || [];
             const subjects = this._data.subjects || {};
             const placeholder = this._data.default_placeholder || "--";
 
-            const splitAt = 4; // z.B. nach Donnerstag umbrechen
+            const splitAt = 4; // e.g. wrap after Thursday
             const dayChunks = [days.slice(0, splitAt), days.slice(splitAt)];
 
             return html`
@@ -647,7 +902,7 @@
             <table class="matrix">
               <tr>
                 <th></th>
-                ${dayGroup.map((day) => html`<th>${day}</th>`)}
+                ${dayGroup.map((day) => html`<th>${normalizeDay(day).label}</th>`)}
               </tr>
               ${times.map(
                     (time, rowIndex) => html`
@@ -738,7 +993,7 @@
             } else {
                 entry[field] = value;
 
-                // Automatische free-Erkennung, falls Subject und Room leer
+                // Automatic free detection if subject and room are empty
                 // const isSubjectEmpty = !entry.subject || entry.subject.trim() === "";
                 // const isRoomEmpty = !entry.room || entry.room.trim() === "";
                 // entry.free = isSubjectEmpty && isRoomEmpty;
@@ -747,10 +1002,10 @@
             if (field === "subject" && value.trim() === "") {
                 entry.subject = null;
             }
-            // Aufräumen
+            // Clean up
             if (!entry.free) delete entry.free;
 
-            // Leeres Objekt? Dann ganz rausnehmen
+            // Empty object? Remove it entirely
             if (Object.keys(entry).length === 0) {
                 delete subj[dayIndex][rowIndex];
             } else {
@@ -894,6 +1149,17 @@
   align-items: center;
   gap: 8px;
 }
+.day-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 8px;
+}
+.day-label {
+  flex: 0 0 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
       `;
         }
@@ -919,7 +1185,7 @@
 );
 
 console.info(
-    `%c 📘 STUDENT-SCHEDULE-CARD %c v1.0.48 `,
+    `%c 📘 STUDENT-SCHEDULE-CARD %c v1.1.0 `,
     "background: #3f51b5; color: white; font-weight: bold; padding: 2px 8px; border-radius: 4px;",
     "background: #009688; color: white; font-weight: bold; padding: 2px 6px; border-radius: 4px;"
 );
