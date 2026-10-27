@@ -18,6 +18,55 @@
         saturday: 6, sat: 6, samstag: 6, sa: 6, "שבת": 6,
     };
 
+    // Fields of the editor's General tab, rendered with <ha-form>.
+    const GENERAL_SCHEMA = [
+        { name: "person_entity", selector: { entity: { domain: "person" } } },
+        { name: "schedule_entity", selector: { entity: {} } },
+        { name: "name", selector: { text: {} } },
+        { name: "icon", selector: { icon: {} } },
+        { name: "description", selector: { text: {} } },
+        { name: "default_placeholder", selector: { text: {} } },
+        { name: "show_breaks", selector: { boolean: {} } },
+        { name: "break_label", selector: { text: {} } },
+        {
+            name: "first_day_of_week",
+            selector: { select: { mode: "dropdown", options: [
+                { value: "monday", label: "Monday" },
+                { value: "sunday", label: "Sunday" },
+            ] } },
+        },
+        { name: "show_highlight", selector: { boolean: {} } },
+        { name: "show_rooms", selector: { boolean: {} } },
+        { name: "shorten_room_names", selector: { boolean: {} } },
+        { name: "mobile_view", selector: { boolean: {} } },
+        { name: "rtl", selector: { boolean: {} } },
+    ];
+    const GENERAL_LABELS = {
+        person_entity: "Child (person entity)",
+        schedule_entity: "Schedule entity (optional, its attributes override days, times, breaks, subjects and colors)",
+        name: "Name (if no person entity)",
+        icon: "Icon (if no person entity)",
+        description: "Description",
+        default_placeholder: "Default placeholder",
+        show_breaks: "Show breaks",
+        break_label: "Break label",
+        first_day_of_week: "First day of week (for days without a recognised weekday)",
+        show_highlight: "Highlight current time",
+        show_rooms: "Show rooms",
+        shorten_room_names: "Shorten room names",
+        mobile_view: "Single-day view on narrow screens",
+        rtl: "Right-to-left",
+    };
+    const WEEKDAY_SELECTOR = {
+        select: {
+            mode: "dropdown",
+            options: [
+                { value: "auto", label: "Weekday: auto-detect" },
+                ...WEEKDAYS.map((w) => ({ value: w, label: w[0].toUpperCase() + w.slice(1) })),
+            ],
+        },
+    };
+
     // A `days` entry is either a label string or { label, day, enabled }.
     function normalizeDay(entry, index) {
         if (entry && typeof entry === "object") {
@@ -529,7 +578,6 @@
                 config: {},
                 _tabIndex: { type: Number },
                 _data: {},
-                _schema: {},
                 _subjects: Array,
                 _entity: String,
             };
@@ -577,34 +625,19 @@
 
             this._data.subjects = updatedSubjects;
             this._subjects = this._extractSubjects(updatedSubjects);
-            this._schema = this._generateSchema();
-        }
-
-        async firstUpdated() {
-            if (!customElements.get("ha-entity-picker")) {
-                try {
-                    const huiCard = customElements.get("hui-entities-card");
-                    if (huiCard && typeof huiCard.getConfigElement === "function") {
-                        await huiCard.getConfigElement();
-                        this.requestUpdate();
-                    } else {
-                        console.warn("ha-entity-picker could not be loaded automatically.");
-                    }
-                } catch (e) {
-                    console.warn("Error loading ha-entity-picker", e);
-                }
-            }
         }
 
         render() {
             const tabs = ["General", "Times", "Colors", "Subjects"];
             return html`
-        <mwc-tab-bar
-          .activeIndex=${this._tabIndex}
-          @MDCTabBar:activated=${(e) => (this._tabIndex = e.detail.index)}
-        >
-          ${tabs.map((t) => html`<mwc-tab label="${t}"></mwc-tab>`)}
-        </mwc-tab-bar>
+        <div class="tabs">
+          ${tabs.map((t, i) => html`
+            <button
+              class="tab ${i === this._tabIndex ? "active" : ""}"
+              @click=${() => (this._tabIndex = i)}
+            >${t}</button>
+          `)}
+        </div>
         <div class="card-content">
           ${this._data.schedule_entity
                     ? html`<ha-alert alert-type="info">
@@ -620,70 +653,42 @@
       `;
         }
 
+        // Values shown in the form, with the card's defaults filled in.
+        _formData() {
+            const d = this._data;
+            return {
+                ...d,
+                show_breaks: d.show_breaks === true,
+                show_highlight: d.show_highlight !== false,
+                show_rooms: d.show_rooms !== false,
+                shorten_room_names: d.shorten_room_names !== false,
+                mobile_view: d.mobile_view === true,
+                rtl: d.rtl === true,
+                first_day_of_week: d.first_day_of_week || "monday",
+            };
+        }
+
+        // Applies only the fields the user changed, so opening the editor does not
+        // write the defaults into the config.
+        _formChanged(ev) {
+            ev.stopPropagation();
+            const before = this._formData();
+            const after = ev.detail.value;
+            for (const { name } of GENERAL_SCHEMA) {
+                if (after[name] === before[name]) continue;
+                this._updateField(name, after[name] === "" ? undefined : after[name]);
+            }
+        }
+
         _renderGeneralTab() {
             return html`
-    <ha-entity-picker
+    <ha-form
       .hass=${this.hass}
-      .label="Child (person entity)"
-      .value=${this._data.person_entity || ""}
-      .includeDomains=${["person"]}
-      configValue="person_entity"
-      @value-changed=${(e) => this._valueChanged(e)}
-    ></ha-entity-picker>
-
-    <ha-entity-picker
-      .hass=${this.hass}
-      .label=${"Schedule entity (optional, its attributes override days, times, breaks, subjects and colors)"}
-      .value=${this._data.schedule_entity || ""}
-      @value-changed=${(e) => {
-                    e.stopPropagation();
-                    this._updateField("schedule_entity", e.detail.value || undefined);
-                }}
-    ></ha-entity-picker>
-
-    ${!this._data.person_entity
-                    ? html`
-          <label class="editor-label">Name (optional):</label>
-          <ha-textfield
-            .value=${this._data.name || ""}
-            @input=${(e) => this._updateField("name", e.target.value)}
-          ></ha-textfield>
-
-          <label class="editor-label">Icon (optional):</label>
-          <ha-icon-picker
-            .value=${this._data.icon || ""}
-            @value-changed=${(e) => this._updateField("icon", e.detail.value)}
-          ></ha-icon-picker>
-        `
-                    : ""}
-
-    <label class="editor-label">Description (optional):</label>
-    <ha-textfield
-      .value=${this._data.description || ""}
-      @input=${(e) => this._updateField("description", e.target.value)}
-    ></ha-textfield>
-
-    <label class="editor-label">Show Breaks:</label>
-    <ha-switch
-      .checked=${this._data.show_breaks !== false}
-      @change=${(e) => this._updateField("show_breaks", e.target.checked)}
-    ></ha-switch>
-
-    ${this._data.show_breaks !== false
-                    ? html`
-          <label class="editor-label">Break label:</label>
-          <ha-textfield
-            .value=${this._data.break_label || ""}
-            @input=${(e) => this._updateField("break_label", e.target.value)}
-          ></ha-textfield>
-        `
-                    : ""}
-
-    <label class="editor-label">Default Placeholder:</label>
-    <ha-textfield
-      .value=${this._data.default_placeholder}
-      @input=${(e) => this._updateField("default_placeholder", e.target.value)}
-    ></ha-textfield>
+      .data=${this._formData()}
+      .schema=${GENERAL_SCHEMA}
+      .computeLabel=${(field) => GENERAL_LABELS[field.name] ?? field.name}
+      @value-changed=${this._formChanged}
+    ></ha-form>
 
     <label class="editor-label">Weekdays (one per line):</label>
     <ha-code-editor
@@ -695,15 +700,15 @@
     ${(this._data.days || []).map(normalizeDay).map((day) => html`
       <div class="day-row">
         <span class="day-label">${day.label}</span>
-        <ha-select
-          label="Weekday"
-          .value=${day.day || ""}
-          @selected=${(e) => this._updateDay(day.index, "day", e.target.value || null)}
-          @closed=${(e) => e.stopPropagation()}
-        >
-          <mwc-list-item value="">Auto-detect</mwc-list-item>
-          ${WEEKDAYS.map((w) => html`<mwc-list-item value=${w}>${w[0].toUpperCase() + w.slice(1)}</mwc-list-item>`)}
-        </ha-select>
+        <ha-selector
+          .hass=${this.hass}
+          .selector=${WEEKDAY_SELECTOR}
+          .value=${day.day || "auto"}
+          @value-changed=${(e) => {
+                    e.stopPropagation();
+                    this._updateDay(day.index, "day", e.detail.value === "auto" ? null : e.detail.value);
+                }}
+        ></ha-selector>
         <ha-formfield label="Show">
           <ha-switch
             .checked=${day.enabled}
@@ -712,58 +717,6 @@
         </ha-formfield>
       </div>
     `)}
-
-    <label class="editor-label">First day of week (for days without a recognised weekday):</label>
-    <ha-select
-      .value=${this._data.first_day_of_week || "monday"}
-      @selected=${(e) => {
-                    // ha-select also fires on first render
-                    if (e.target.value !== (this._data.first_day_of_week || "monday"))
-                        this._updateField("first_day_of_week", e.target.value);
-                }}
-      @closed=${(e) => e.stopPropagation()}
-    >
-      <mwc-list-item value="monday">Monday</mwc-list-item>
-      <mwc-list-item value="sunday">Sunday</mwc-list-item>
-    </ha-select>
-
-    <label class="editor-label">Display Options:</label>
-    <div class="switch-row">
-      <ha-formfield label="Highlight current time">
-        <ha-switch
-          .checked=${this._data.show_highlight !== false}
-          @change=${(e) => this._updateField("show_highlight", e.target.checked)}
-        ></ha-switch>
-      </ha-formfield>
-
-      <ha-formfield label="Show rooms">
-        <ha-switch
-          .checked=${this._data.show_rooms !== false}
-          @change=${(e) => this._updateField("show_rooms", e.target.checked)}
-        ></ha-switch>
-      </ha-formfield>
-
-      <ha-formfield label="Shorten room names">
-        <ha-switch
-          .checked=${this._data.shorten_room_names !== false}
-          @change=${(e) => this._updateField("shorten_room_names", e.target.checked)}
-        ></ha-switch>
-      </ha-formfield>
-
-      <ha-formfield label="Single-day view on narrow screens">
-        <ha-switch
-          .checked=${this._data.mobile_view === true}
-          @change=${(e) => this._updateField("mobile_view", e.target.checked)}
-        ></ha-switch>
-      </ha-formfield>
-
-      <ha-formfield label="Right-to-left">
-        <ha-switch
-          .checked=${this._data.rtl === true}
-          @change=${(e) => this._updateField("rtl", e.target.checked)}
-        ></ha-switch>
-      </ha-formfield>
-    </div>
   `;
         }
         _renderTimesTab() {
@@ -817,7 +770,7 @@
 
         _updateDay(index, field, value) {
             const day = normalizeDay(this._data.days[index], index);
-            if (day[field] === value) return; // ha-select also fires on first render
+            if (day[field] === value) return;
             const days = [...this._data.days];
             const { index: _index, ...entry } = { ...day, [field]: value };
             days[index] = entry;
@@ -1062,35 +1015,6 @@
             this._emit();
         }
 
-        _valueChanged(ev) {
-            ev.stopPropagation();
-            const value = ev.detail.value;
-
-            this._data = { ...this._data, person_entity: value };
-            this._emit();
-        }
-
-        _generateSchema() {
-            return {
-                general: [
-                    { name: "name", selector: { text: {} } },
-                    { name: "icon", selector: { icon: {} } },
-                    { name: "person_entity", selector: { entity: { domain: "person" } } },
-                    { name: "description", selector: { text: {} } },
-                    { name: "show_breaks", selector: { boolean: {} } },
-                    { name: "break_label", selector: { text: {} } },
-                    { name: "default_placeholder", selector: { text: {} } },
-                    { name: "show_highlight", selector: { boolean: {} } },
-                    { name: "show_rooms", selector: { boolean: {} } },
-                    { name: "shorten_room_names", selector: { boolean: {} } },
-                ],
-                times: [
-                    { name: "times", selector: { text: { multiline: true } } },
-                    { name: "breaks", selector: { text: { multiline: true } } },
-                ],
-            };
-        }
-
         static get styles() {
             return css`
         .grid {
@@ -1137,23 +1061,37 @@
           opacity: 0.7;
           font-style: italic;
         }
-        .switch-row {
+        .tabs {
   display: flex;
-  flex-wrap: wrap;
-  gap: 16px;
-  margin-top: 0.5em;
-  margin-bottom: 1em;
+  border-bottom: 1px solid var(--divider-color);
+  margin-bottom: 8px;
 }
-.switch-row ha-formfield {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.tab {
+  flex: 1;
+  padding: 12px 8px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--secondary-text-color);
+  font: inherit;
+  cursor: pointer;
+}
+.tab.active {
+  color: var(--primary-color);
+  border-bottom-color: var(--primary-color);
+}
+ha-form {
+  display: block;
+  margin-bottom: 8px;
 }
 .day-row {
   display: flex;
   align-items: center;
   gap: 12px;
   margin-top: 8px;
+}
+.day-row ha-selector {
+  flex: 1;
 }
 .day-label {
   flex: 0 0 100px;
